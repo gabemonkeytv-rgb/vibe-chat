@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!-- VIBE SETTINGS: PUT YOUR VALUES HERE -->
+  <script>
+    const SUPABASE_URL = "https://gxfhzqtlcexneuonrryl.supabase.co/rest/v1/";
+    const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_EvJ8SO7DdOMKCNXenpxwBA_SXqO1jWl";
+  </script>
+
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#171329">
+  <title>Vibe — Chat Together</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #171329;
+      color: #fff;
+    }
+    header {
+      padding: 16px;
+      background: #241b40;
+      font-size: 25px;
+      font-weight: bold;
+      color: #c6a7ff;
+    }
+    main {
+      max-width: 900px;
+      margin: auto;
+      padding: 16px;
+    }
+    .panel {
+      background: #241f39;
+      padding: 16px;
+      border-radius: 14px;
+      margin-bottom: 14px;
+    }
+    input, button {
+      width: 100%;
+      padding: 12px;
+      margin: 5px 0;
+      border: 0;
+      border-radius: 9px;
+      font-size: 16px;
+    }
+    input { background: #352d4d; color: white; }
+    button {
+      background: #a879ff;
+      color: #171329;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    button.secondary { background: #403656; color: white; }
+    .hidden { display: none; }
+    #layout {
+      display: grid;
+      grid-template-columns: 1fr 2fr;
+      gap: 12px;
+    }
+    #servers, #channels { display: grid; gap: 6px; }
+    .item {
+      padding: 10px;
+      background: #352d4d;
+      border-radius: 8px;
+      cursor: pointer;
+      overflow-wrap: anywhere;
+    }
+    #messages {
+      height: 300px;
+      overflow-y: auto;
+      background: #171329;
+      padding: 10px;
+      border-radius: 8px;
+      margin-bottom: 10px;
+    }
+    .message {
+      padding: 8px;
+      margin-bottom: 7px;
+      background: #352d4d;
+      border-radius: 8px;
+      overflow-wrap: anywhere;
+    }
+    #status { color: #d8c8ff; white-space: pre-wrap; }
+    @media (max-width: 600px) {
+      #layout { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+
+<body>
+  <header>💜 Vibe</header>
+  <main>
+    <p id="status">Welcome to Vibe!</p>
+
+    <section id="auth" class="panel">
+      <h2>Your account</h2>
+      <input id="username" placeholder="Username (for sign-up)">
+      <input id="email" type="email" placeholder="Email">
+      <input id="password" type="password"
+             placeholder="Password (8+ characters)">
+      <button id="signup">Create account</button>
+      <button id="login" class="secondary">Log in</button>
+    </section>
+
+    <section id="app" class="hidden">
+      <div class="panel">
+        <span id="who"></span>
+        <button id="logout" class="secondary">Log out</button>
+      </div>
+
+      <div id="layout">
+        <div>
+          <section class="panel">
+            <h3>Your servers</h3>
+            <div id="servers"></div>
+            <input id="serverName" placeholder="New server name">
+            <button id="createServer">Create server</button>
+          </section>
+
+          <section class="panel">
+            <h3>Channels</h3>
+            <div id="channels"></div>
+            <input id="channelName" placeholder="New channel name">
+            <button id="createChannel">Create channel</button>
+          </section>
+        </div>
+
+        <section class="panel">
+          <h3 id="chatTitle">Choose a channel</h3>
+          <div id="messages"></div>
+          <input id="messageInput" placeholder="Write a message">
+          <button id="send">Send message</button>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const statusEl = document.getElementById("status");
+    const say = message => statusEl.textContent = message;
+
+    const configured =
+      SUPABASE_URL.startsWith("https://") &&
+      !SUPABASE_URL.includes("YOUR_") &&
+      SUPABASE_PUBLISHABLE_KEY.length > 10 &&
+      !SUPABASE_PUBLISHABLE_KEY.includes("YOUR_");
+
+    let db = null;
+    let user = null;
+    let currentServer = null;
+    let currentChannel = null;
+    let messageSubscription = null;
+
+    if (!configured) {
+      say("Add your Supabase URL and publishable key at the top of this file.");
+    } else {
+      db = window.supabase.createClient(
+        SUPABASE_URL,
+        SUPABASE_PUBLISHABLE_KEY
+      );
+
+      db.auth.getSession().then(({ data, error }) => {
+        if (error) return say(error.message);
+        if (data.session) {
+          user = data.session.user;
+          showApp();
+        }
+      });
+
+      db.auth.onAuthStateChange((_event, session) => {
+        user = session?.user || null;
+        if (user) showApp();
+        else showAuth();
+      });
+    }
+
+    function showAuth() {
+      document.getElementById("auth").classList.remove("hidden");
+      document.getElementById("app").classList.add("hidden");
+      document.getElementById("who").textContent = "";
+    }
+
+    async function showApp() {
+      document.getElementById("auth").classList.add("hidden");
+      document.getElementById("app").classList.remove("hidden");
+      document.getElementById("who").textContent =
+        "Logged in: " + (user.email || "Vibe user");
+      await loadServers();
+    }
+
+    document.getElementById("signup").onclick = async () => {
+      if (!db) return;
+      const username = document.getElementById("username").value.trim();
+      const email = document.getElementById("email").value.trim();
+      const password = document.getElementById("password").value;
+
+      if (!username || !email || password.length < 8) {
+        return say("Enter a username, email, and password of at least 8 characters.");
+      }
+
+      say("Creating your account...");
+      const { data, error } = await db.auth.signUp({
+        email,
+        password,
+        options: { data: { username } }
+      });
+
+      if (error) return say(error.message);
+
+      if (data.user && data.session) {
+        const { error: profileError } = await db.from("profiles").upsert({
+          id: data.user.id,
+          username
+        });
+        if (profileError) return say(profileError.message);
+        user = data.user;
+        await showApp();
+      } else {
+        say("Check your email to confirm your account, then log in. Profile setup may need to be completed before using the app.");
+      }
+    };
+
+    document.getElementById("login").onclick = async () => {
+      if (!db) return;
+      const email = document.getElementById("email").value.trim();
+      const password = document.getElementById("password").value;
+
+      say("Logging in...");
+      const { data, error } = await db.auth.signInWithPassword({
+        email, password
+      });
+      if (error) return say(error.message);
+      user = data.user;
+      await showApp();
+    };
+
+    document.getElementById("logout").onclick = async () => {
+      if (!db) return;
+      await db.auth.signOut();
+      currentServer = null;
+      currentChannel = null;
+      showAuth();
+      say("You are logged out.");
+    };
+
+    async function loadServers() {
+      if (!user) return;
+      const { data, error } = await db
+        .from("servers")
+        .select("id,name,owner_id")
+        .order("name");
+
+      if (error) return say(error.message);
+
+      const container = document.getElementById("servers");
+      container.replaceChildren();
+
+      for (const server of data || []) {
+        const el = document.createElement("div");
+        el.className = "item";
+        el.textContent = server.name;
+        el.onclick = () => selectServer(server);
+        container.appendChild(el);
+      }
+    }
+
+    document.getElementById("createServer").onclick = async () => {
+      if (!user) return;
+      const name = document.getElementById("serverName").value.trim();
+      if (!name) return say("Enter a server name.");
+
+      say("Creating server...");
+      const { data, error } = await db
+        .from("servers")
+        .insert({ name, owner_id: user.id })
+        .select()
+        .single();
+
+      if (error) return say(error.message);
+
+      // This membership step depends on your current database policies.
+      // Tighten membership/invite rules before allowing public sign-ups.
+      const { error: memberError } = await db
+        .from("server_members")
+        .insert({ server_id: data.id, user_id: user.id });
+
+      if (memberError) {
+        say("Server created, but joining it failed: " + memberError.message);
+        await loadServers();
+        return;
+      }
+
+      document.getElementById("serverName").value = "";
+      await loadServers();
+      await selectServer(data);
+      say("Server created!");
+    };
+
+    async function selectServer(server) {
+      currentServer = server;
+      currentChannel = null;
+      document.getElementById("chatTitle").textContent = server.name;
+      document.getElementById("messages").replaceChildren();
+
+      const { data, error } = await db
+        .from("channels")
+        .select("id,name,server_id")
+        .eq("server_id", server.id)
+        .order("name");
+
+      if (error) return say(error.message);
+
+      const container = document.getElementById("channels");
+      container.replaceChildren();
+
+      for (const channel of data || []) {
+        const el = document.createElement("div");
+        el.className = "item";
+        el.textContent = "# " + channel.name;
+        el.onclick = () => selectChannel(channel);
+        container.appendChild(el);
+      }
+    }
+
+    document.getElementById("createChannel").onclick = async () => {
+      if (!currentServer || !user) {
+        return say("Choose a server first.");
+      }
+
+      const name = document.getElementById("channelName").value.trim();
+      if (!name) return say("Enter a channel name.");
+
+      const { data, error } = await db
+        .from("channels")
+        .insert({ name, server_id: currentServer.id })
+        .select()
+        .single();
+
+      if (error) return say(error.message);
+
+      document.getElementById("channelName").value = "";
+      await selectServer(currentServer);
+      await selectChannel(data);
+      say("Channel created!");
+    };
+
+    async function selectChannel(channel) {
+      currentChannel = channel;
+      document.getElementById("chatTitle").textContent =
+        currentServer.name + " / #" + channel.name;
+
+      if (messageSubscription) {
+        await db.removeChannel(messageSubscription);
+        messageSubscription = null;
+      }
+
+      await loadMessages();
+
+      messageSubscription = db
+        .channel("vibe-messages-" + channel.id)
+        .on("postgres_changes", {
+          event: "INSERT",
+          schema: "public",
+          table: "messages",
+          filter: "channel_id=eq." + channel.id
+        }, () => loadMessages())
+        .subscribe();
+    }
+
+    async function loadMessages() {
+      if (!currentChannel) return;
+
+      const { data, error } = await db
+        .from("messages")
+        .select("id,user_id,content,created_at")
+        .eq("channel_id", currentChannel.id)
+        .order("created_at", { ascending: true })
+        .limit(100);
+
+      if (error) return say(error.message);
+
+      const ids = [...new Set((data || []).map(m => m.user_id))];
+      let profiles = [];
+
+      if (ids.length) {
+        const result = await db
+          .from("profiles")
+          .select("id,username")
+          .in("id", ids);
+        if (!result.error) profiles = result.data || [];
+      }
+
+      const names = Object.fromEntries(
+        profiles.map(p => [p.id, p.username])
+      );
+
+      const container = document.getElementById("messages");
+      container.replaceChildren();
+
+      for (const message of data || []) {
+        const el = document.createElement("div");
+        el.className = "message";
+
+        const name = document.createElement("strong");
+        name.textContent = names[message.user_id] || "User";
+
+        const content = document.createElement("div");
+        content.textContent = message.content;
+
+        el.append(name, content);
+        container.appendChild(el);
+      }
+
+      container.scrollTop = container.scrollHeight;
+    }
+
+    document.getElementById("send").onclick = async () => {
+      if (!user || !currentChannel) {
+        return say("Choose a channel first.");
+      }
+
+      const input = document.getElementById("messageInput");
+      const content = input.value.trim();
+      if (!content) return;
+
+      const { error } = await db.from("messages").insert({
+        channel_id: currentChannel.id,
+        user_id: user.id,
+        content
+      });
+
+      if (error) return say(error.message);
+
+      input.value = "";
+      await loadMessages();
+    };
+
+    document.getElementById("messageInput").addEventListener("keydown", e => {
+      if (e.key === "Enter") document.getElementById("send").click();
+    });
+  </script>
+</body>
+</html>
